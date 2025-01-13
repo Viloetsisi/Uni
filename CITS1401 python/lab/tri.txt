@@ -1,0 +1,10 @@
+Case No.	    		 Description     			Input Values		    	 Expected Output
+1.triangle	         x+y<z or y+z<x or x+z<y         2,3,4                                    can form
+                                                                        2,3,6                                    cannot form
+
+2.isosceles	         x==y or x==z or y==z             3,3,4                                         yes
+
+3.equilateral                x==y==z                       3,3,3						yes
+
+4.right               x**2+y**2=z**2 or x**2+z**2=y**2
+                                or y**2+z**2=x**2		3,4,5						yes	
