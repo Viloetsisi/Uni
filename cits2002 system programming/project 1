@@ -1,0 +1,769 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <unistd.h> // for getpid()
+
+// Define constants for maximum sizes
+#define MAX_LINE_LENGTH 1024
+#define MAX_IDENTIFIER_LENGTH 12
+#define MAX_IDENTIFIERS 100
+#define MAX_ARGS 10    // Maximum number of command-line arguments
+#define MAX_FUNCTION_PARAMETERS 10
+
+// Global variables
+int in_function_body = 0; // Global variable to track if we're inside a function body
+int in_global_scope = 1;  // Global variable to track if we're in the global scope
+int function_defined = 0; // Variable to track if any function has been defined
+double arg_values[MAX_ARGS]; // Array to store command-line argument values
+int arg_count = 0;           // Number of command-line arguments
+int return_statement_found = 0; // Variable to track if a return statement was found in the function
+
+// Data structure to store variables and function names
+typedef struct {
+    char name[MAX_IDENTIFIER_LENGTH + 1];
+    int declared;         // 1 if the variable has been declared, 0 otherwise
+    int is_global;        // 1 if the variable is global, 0 otherwise
+    int is_function;      // 1 if it's a function, 0 otherwise
+    int is_parameter;     // 1 if it's a function parameter
+    int assignment_count; // Number of times the variable has been assigned
+} Identifier;
+
+Identifier identifiers[MAX_IDENTIFIERS]; // Array to store identifiers
+int identifier_count = 0;                // Number of identifiers stored
+
+// Function parameters
+char function_parameters[MAX_FUNCTION_PARAMETERS][MAX_IDENTIFIER_LENGTH + 1];
+int parameter_count = 0;
+
+FILE *c_file;
+FILE *temp_file;        // Temporary file to store function definitions
+FILE *main_temp_file;   // Temporary file to store main function content
+FILE *global_temp_file; // Temporary file to store global variable declarations
+
+// Helper function to trim leading and trailing whitespace and remove newline
+void trim_whitespace(char *str) {
+    char *end;
+
+    if (str == NULL || *str == '\0')
+        return;
+
+    // Trim leading space
+    while (isspace((unsigned char)*str))
+        str++;
+
+    if (*str == '\0') {
+        *str = '\0';
+        return;
+    }
+
+    // Trim trailing space
+    end = str + strlen(str) - 1;
+    while (end > str && (isspace((unsigned char)*end) || *end == '\n'))
+        end--;
+
+    *(end + 1) = '\0';
+}
+
+// Function to validate identifier (checks length and whether all characters are lowercase alphabetic)
+int is_valid_identifier(const char *identifier) {
+    int len = strlen(identifier);
+    if (len < 1 || len > MAX_IDENTIFIER_LENGTH)
+        return 0;
+    for (int i = 0; i < len; i++) {
+        if (!islower(identifier[i]))
+            return 0;
+    }
+    return 1;
+}
+
+// Error reporting function
+void report_error(const char *message) {
+    fprintf(stderr, "! %s\n", message);
+    exit(EXIT_FAILURE);
+}
+
+// Function to check if a string is a constant numerical value
+int is_constant_expression(const char *str) {
+    char *endptr;
+    strtod(str, &endptr);
+    // Skip any whitespace after the number
+    while (isspace((unsigned char)*endptr)) {
+        endptr++;
+    }
+    // If endptr points to the end of the string, it's a valid number
+    return (*endptr == '\0');
+}
+
+// Function to check if a function is defined
+int is_function_defined(const char *name) {
+    for (int i = 0; i < identifier_count; i++) {
+        if (strcmp(identifiers[i].name, name) == 0 && identifiers[i].is_function) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Function to declare an identifier (variable or function)
+void declare_identifier(const char *name, const char *value) {
+    if (strncmp(name, "arg", 3) == 0) {
+        int num;
+        if (sscanf(name + 3, "%d", &num) == 1 && num >= 0 && num < arg_count) {
+            FILE *current_file = in_function_body ? temp_file : main_temp_file;
+            fprintf(current_file, "double %s = %f;\n", name, arg_values[num]);
+            return;
+        } else if (num >= arg_count) {
+            report_error("Argument index out of range");
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    // Find the identifier in the list or add it if not found
+    int index = -1;
+    for (int i = 0; i < identifier_count; i++) {
+        if (strcmp(identifiers[i].name, name) == 0) {
+            // Check if we're in a different scope
+            if (identifiers[i].is_parameter && !in_function_body) {
+                // Variable is a parameter in a function, but we're outside the function; treat as new
+                continue;
+            } else {
+                index = i;
+                break;
+            }
+        }
+    }
+
+    if (index == -1) {
+        // New variable; add to identifiers
+        if (identifier_count >= MAX_IDENTIFIERS) {
+            report_error("Exceeded maximum number of identifiers");
+            exit(EXIT_FAILURE);
+        }
+        index = identifier_count++;
+        strncpy(identifiers[index].name, name, MAX_IDENTIFIER_LENGTH);
+        identifiers[index].name[MAX_IDENTIFIER_LENGTH] = '\0';
+        identifiers[index].declared = 1;
+        identifiers[index].is_function = 0;
+        identifiers[index].assignment_count = 1;
+        identifiers[index].is_parameter = 0;
+        identifiers[index].is_global = in_global_scope;
+    } else {
+        // Existing variable; increment assignment count
+        identifiers[index].assignment_count++;
+    }
+
+    // Check if the identifier is a parameter and we're inside the function body
+    if (identifiers[index].is_parameter && in_function_body) {
+        // It's a parameter in the function body; do not redeclare
+        FILE *current_file = temp_file;
+        fprintf(current_file, "%s = %s;\n", name, value ? value : "0.0");
+        return;
+    }
+
+    // Decide where to declare the variable
+    FILE *current_file;
+    int declare_in_global = 0;
+
+    // If variable is assigned more than once, it should be in main or function scope
+    if (identifiers[index].assignment_count > 1) {
+        declare_in_global = 0;
+    } else if (in_global_scope && !function_defined && is_constant_expression(value)) {
+        // Assigning a constant in global scope
+        declare_in_global = 1;
+    } else {
+        declare_in_global = 0;
+    }
+
+    // Set the scope of the variable
+    identifiers[index].is_global = declare_in_global;
+
+    // Choose the correct file to write to based on scope
+    if (in_function_body) {
+        current_file = temp_file;
+    } else if (declare_in_global) {
+        current_file = global_temp_file;
+    } else {
+        current_file = main_temp_file;
+    }
+
+    // Declare or assign the variable
+    if (identifiers[index].assignment_count == 1 && identifiers[index].declared == 1 && !identifiers[index].is_parameter) {
+        // First assignment; declare the variable
+        fprintf(current_file, "double %s = %s;\n", name, value ? value : "0.0");
+    } else {
+        // Subsequent assignment or parameter; assign new value
+        fprintf(current_file, "%s = %s;\n", name, value ? value : "0.0");
+    }
+}
+
+// New function to process expressions and declare undeclared variables
+void process_expression(const char *expression) {
+    const char *ptr = expression;
+    while (*ptr != '\0') {
+        if (isalpha(*ptr)) {
+            // Start of an identifier
+            char identifier[MAX_IDENTIFIER_LENGTH + 1];
+            int id_len = 0;
+            // Removed unused variable 'id_start'
+            while ((isalnum(*ptr) || *ptr == '_') && id_len < MAX_IDENTIFIER_LENGTH) {
+                identifier[id_len++] = *ptr;
+                ptr++;
+            }
+            identifier[id_len] = '\0';
+            // Skip any remaining letters/digits (if identifier longer than max length)
+            while (isalnum(*ptr) || *ptr == '_') {
+                ptr++;
+            }
+            // Save current position
+            const char *saved_ptr = ptr;
+            // Skip any whitespace
+            while (isspace(*ptr)) {
+                ptr++;
+            }
+            // Check if next character is '('
+            if (*ptr == '(') {
+                // Function call
+                // We need to process the arguments inside the parentheses
+                ptr++; // Skip '('
+                int paren_count = 1;
+                const char *arg_start = ptr;
+                while (*ptr != '\0' && paren_count > 0) {
+                    if (*ptr == '(') {
+                        paren_count++;
+                    } else if (*ptr == ')') {
+                        paren_count--;
+                    }
+                    ptr++;
+                }
+                // Now arg_start to ptr-1 is the arguments string
+                int arg_len = ptr - arg_start - 1; // Exclude closing ')'
+                if (arg_len > 0) {
+                    char *args = (char *)malloc(arg_len + 1);
+                    strncpy(args, arg_start, arg_len);
+                    args[arg_len] = '\0';
+                    // Process the arguments
+                    process_expression(args);
+                    free(args);
+                }
+            } else {
+                // Not a function call, so identifier is a variable
+                if (!is_function_defined(identifier)) {
+                    // Check if identifier is already declared
+                    int declared = 0;
+                    for (int i = 0; i < identifier_count; i++) {
+                        if (strcmp(identifiers[i].name, identifier) == 0) {
+                            declared = 1;
+                            break;
+                        }
+                    }
+                    if (!declared) {
+                        // Declare the variable with initial value 0.0
+                        declare_identifier(identifier, "0.0");
+                    }
+                }
+                // Restore ptr to saved position
+                ptr = saved_ptr;
+            }
+        } else if (isdigit(*ptr) || *ptr == '.') {
+            // Number literal, skip it
+            // Skip over digits and decimal point
+            while (isdigit(*ptr) || *ptr == '.') {
+                ptr++;
+            }
+        } else if (*ptr == '\'' || *ptr == '\"') {
+            // String literal, skip it
+            char quote = *ptr;
+            ptr++;
+            while (*ptr != '\0' && *ptr != quote) {
+                ptr++;
+            }
+            if (*ptr == quote) {
+                ptr++;
+            }
+        } else {
+            // Other character, skip it
+            ptr++;
+        }
+    }
+}
+
+// Parse assignment lines like "x <- add(3.14, 1.59)"
+void parse_assignment(char *line) {
+    char identifier[MAX_IDENTIFIER_LENGTH + 1];
+    char value[MAX_LINE_LENGTH];
+
+    // Extract the identifier and the value expression
+    if (sscanf(line, "%s <- %[^\n]", identifier, value) != 2) {
+        report_error("Invalid assignment syntax");
+        exit(EXIT_FAILURE);
+    }
+    if (!is_valid_identifier(identifier)) {
+        report_error("Invalid identifier in assignment");
+        exit(EXIT_FAILURE);
+    }
+
+    trim_whitespace(value);
+
+    // Process the expression to declare any undeclared variables
+    process_expression(value);
+
+    declare_identifier(identifier, value);
+}
+
+// Parse print statements like "print a + b"
+void parse_print_statement(char *line) {
+    char *expression = strstr(line, "print ");
+    if (!expression) {
+        report_error("Invalid print statement");
+        exit(EXIT_FAILURE);
+    }
+    expression += 6; // Move past "print "
+    trim_whitespace(expression);
+
+    // Process the expression to declare any undeclared variables
+    process_expression(expression);
+
+    FILE *current_file = in_function_body ? temp_file : main_temp_file;
+    fprintf(current_file, "if ((%s) == (int)(%s)) {\n", expression, expression);
+    fprintf(current_file, "\tprintf(\"%%d\\n\", (int)(%s));\n", expression);
+    fprintf(current_file, "} else {\n");
+    fprintf(current_file, "\tprintf(\"%%.6f\\n\", (double)(%s));\n", expression);
+    fprintf(current_file, "}\n");
+}
+
+// Parse return statements like "return x"
+void parse_return_statement(char *line) {
+    if (!in_function_body) {
+        report_error("Return statement outside of function");
+        exit(EXIT_FAILURE);
+    }
+
+    char *expression = strstr(line, "return");
+    if (!expression) {
+        report_error("Invalid return statement");
+        exit(EXIT_FAILURE);
+    }
+    expression += 6; // Move past "return"
+    trim_whitespace(expression);
+
+    // Process the expression to declare any undeclared variables
+    process_expression(expression);
+
+    fprintf(temp_file, "return %s;\n", expression);
+    return_statement_found = 1; // Mark that a return statement was found
+}
+
+// Parse function definitions like "function printsum a b" or "function factorial"
+void parse_function_definition(char *line) {
+    function_defined = 1;
+    in_global_scope = 0; // We're no longer in the global scope when we enter a function
+    char identifier[MAX_IDENTIFIER_LENGTH + 1];
+
+    // Use strtok to parse the function definition
+    char *token = strtok(line, " \t");
+    if (!token || strcmp(token, "function") != 0) {
+        report_error("Invalid function definition");
+        exit(EXIT_FAILURE);
+    }
+
+    // Get the function name
+    token = strtok(NULL, " \t");
+    if (!token) {
+        report_error("Function name missing");
+        exit(EXIT_FAILURE);
+    }
+
+    strncpy(identifier, token, MAX_IDENTIFIER_LENGTH);
+    identifier[MAX_IDENTIFIER_LENGTH] = '\0';
+
+    if (!is_valid_identifier(identifier)) {
+        report_error("Invalid function name");
+        exit(EXIT_FAILURE);
+    }
+
+    // Add the function to the identifiers list
+    if (identifier_count < MAX_IDENTIFIERS) {
+        strncpy(identifiers[identifier_count].name, identifier, MAX_IDENTIFIER_LENGTH);
+        identifiers[identifier_count].declared = 1;
+        identifiers[identifier_count].is_global = 0;
+        identifiers[identifier_count].is_function = 1;
+        identifiers[identifier_count].is_parameter = 0;
+        identifiers[identifier_count].assignment_count = 0;
+        identifier_count++;
+    } else {
+        report_error("Exceeded maximum number of identifiers");
+        exit(EXIT_FAILURE);
+    }
+
+    // Start writing the function definition to the temp file
+    fprintf(temp_file, "double %s(", identifier);
+
+    // Parse parameters
+    char *params_start = line + strlen("function") + strlen(identifier) + 2;
+    trim_whitespace(params_start);
+
+    parameter_count = 0; // Reset parameter count
+
+    if (*params_start == '\n' || *params_start == '\0') {
+        // No parameters; use 'void' in C function
+        fprintf(temp_file, "void");
+    } else {
+        // Parameters exist
+        char *param = strtok(params_start, " \t");
+        int first_param = 1;
+
+        while (param) {
+            if (!is_valid_identifier(param)) {
+                report_error("Invalid parameter name");
+                exit(EXIT_FAILURE);
+            }
+
+            // Store the parameter
+            if (parameter_count >= MAX_FUNCTION_PARAMETERS) {
+                report_error("Exceeded maximum number of parameters");
+                exit(EXIT_FAILURE);
+            }
+            strncpy(function_parameters[parameter_count], param, MAX_IDENTIFIER_LENGTH);
+            function_parameters[parameter_count][MAX_IDENTIFIER_LENGTH] = '\0';
+            parameter_count++;
+
+            // Add parameter to identifiers list
+            if (identifier_count >= MAX_IDENTIFIERS) {
+                report_error("Exceeded maximum number of identifiers");
+                exit(EXIT_FAILURE);
+            }
+            strncpy(identifiers[identifier_count].name, param, MAX_IDENTIFIER_LENGTH);
+            identifiers[identifier_count].name[MAX_IDENTIFIER_LENGTH] = '\0';
+            identifiers[identifier_count].declared = 1;
+            identifiers[identifier_count].is_function = 0;
+            identifiers[identifier_count].is_global = 0;
+            identifiers[identifier_count].is_parameter = 1;
+            identifiers[identifier_count].assignment_count = 0; // Parameters are not assigned yet
+            identifier_count++;
+
+            // Write parameters to the function definition
+            if (!first_param) {
+                fprintf(temp_file, ", ");
+            }
+            first_param = 0;
+            fprintf(temp_file, "double %s", param);
+            param = strtok(NULL, " \t");
+        }
+    }
+
+    fprintf(temp_file, ") {\n");
+    in_function_body = 1;
+    return_statement_found = 0; // Reset return statement tracker
+}
+
+// Parse function calls like "printsum(12, 6)" or "printsum (12, 6)"
+void parse_function_call(char *line) {
+    char function_name[MAX_IDENTIFIER_LENGTH + 1];
+
+    // Trim leading whitespace
+    while (isspace(*line))
+        line++;
+
+    // Copy line to a temporary buffer to avoid modifying the original line
+    char temp_line[MAX_LINE_LENGTH];
+    strncpy(temp_line, line, MAX_LINE_LENGTH);
+    temp_line[MAX_LINE_LENGTH - 1] = '\0';
+
+    // Find the position of '('
+    char *paren_pos = strchr(temp_line, '(');
+    if (!paren_pos) {
+        report_error("Malformed function call");
+        exit(EXIT_FAILURE);
+    }
+
+    // Null-terminate the function name at paren_pos
+    *paren_pos = '\0';
+
+    // Trim any trailing spaces from the function name
+    trim_whitespace(temp_line);
+
+    // Now temp_line contains the function name
+    if (strlen(temp_line) > MAX_IDENTIFIER_LENGTH) {
+        report_error("Function name too long");
+        exit(EXIT_FAILURE);
+    }
+    strcpy(function_name, temp_line);
+
+    // Check if the function is defined
+    if (!is_function_defined(function_name)) {
+        fprintf(stderr, "! Error: Function '%s' called before definition\n", function_name);
+        exit(EXIT_FAILURE);
+    }
+
+    // Get the arguments inside the parentheses
+    char *args_start = paren_pos + 1;
+    char *args_end = strchr(args_start, ')');
+
+    if (args_end) {
+        *args_end = '\0';
+        char *args = args_start;
+        trim_whitespace(args);
+
+        // Process the arguments to declare any undeclared variables
+        process_expression(args);
+
+        FILE *current_file = in_function_body ? temp_file : main_temp_file;
+        fprintf(current_file, "%s(%s);\n", function_name, args);
+    } else {
+        fprintf(stderr, "! Error: Malformed function call: %s\n", line);
+        exit(EXIT_FAILURE);
+    }
+}
+
+// Parse a line of ml code
+void parse_line(char *line) {
+    if (line[0] == '\t') {
+        // If we're not inside a function body and encounter an indented line, report an error
+        if (!in_function_body) {
+            report_error("Program lines should commence at the left-hand margin (no indentation).");
+            exit(EXIT_FAILURE);
+        }
+
+        in_global_scope = 0; // We're no longer in the global scope if we see an indented line
+        char *indented_line = line + 1;
+        trim_whitespace(indented_line);
+        if (strlen(indented_line) > 0) {
+            if (strstr(indented_line, "print ")) {
+                parse_print_statement(indented_line);
+            } else if (strstr(indented_line, "return")) {
+                parse_return_statement(indented_line);
+            } else if (strstr(indented_line, "<-")) {
+                parse_assignment(indented_line);
+            } else if (strchr(indented_line, '(') && strchr(indented_line, ')')) {
+                parse_function_call(indented_line);
+            } else {
+                report_error("Unrecognized statement");
+                exit(EXIT_FAILURE);
+            }
+        }
+        return;
+    }
+
+    if (in_function_body && line[0] != '\t') {
+        // Before closing the function, check if a return statement was found
+        if (!return_statement_found) {
+            fprintf(temp_file, "return 0.0;\n");
+        }
+        fprintf(temp_file, "}\n\n");
+        in_function_body = 0;
+        in_global_scope = 1; // We're back in the global scope after a function ends
+        parameter_count = 0; // Reset parameter count
+    }
+
+    // Parse function definitions
+    if (strstr(line, "function")) {
+        if (in_function_body) {
+            // Before closing the function, check if a return statement was found
+            if (!return_statement_found) {
+                fprintf(temp_file, "return 0.0;\n");
+            }
+            fprintf(temp_file, "}\n"); // Close the previous function body if still open
+            in_function_body = 0;
+        }
+        parse_function_definition(line);
+        in_function_body = 1;
+        in_global_scope = 0; // We're no longer in the global scope when we enter a function
+        return;
+    }
+
+    // Handle print statements
+    if (strstr(line, "print ")) {
+        parse_print_statement(line);
+        return;
+    }
+
+    // Handle return statements
+    if (strstr(line, "return")) {
+        parse_return_statement(line);
+        return;
+    }
+
+    // Handle function calls
+    if (strchr(line, '(') && strchr(line, ')')) {
+        if (strstr(line, "<-")) {
+            parse_assignment(line);
+        } else {
+            parse_function_call(line);
+        }
+        return;
+    }
+
+    // Handle assignment (e.g., "x <- 5")
+    if (strstr(line, "<-")) {
+        parse_assignment(line);
+        return;
+    }
+
+    // If none of the above, check for indented lines outside functions
+    if (line[0] == '\t') {
+        report_error("Program lines should commence at the left-hand margin (no indentation).");
+        exit(EXIT_FAILURE);
+    }
+}
+
+// Parse the entire ml file
+void parse_ml_file(FILE *ml_file) {
+    char line[MAX_LINE_LENGTH];
+
+    while (fgets(line, sizeof(line), ml_file)) {
+        char *comment = strchr(line, '#');
+        if (comment) {
+            *comment = '\0'; // Remove comments
+        }
+        trim_whitespace(line);
+        if (strlen(line) > 0) {
+            parse_line(line);
+        }
+    }
+
+    // Close any open function bodies at the end of the file
+    if (in_function_body) {
+        // Before closing the function, check if a return statement was found
+        if (!return_statement_found) {
+            fprintf(temp_file, "return 0.0;\n");
+        }
+        fprintf(temp_file, "}\n\n");
+        in_function_body = 0;
+    }
+}
+
+// Generate a unique C file based on the process ID
+void generate_c_file(FILE *ml_file) {
+    char c_filename[256];
+    char temp_filename[256];
+    char main_temp_filename[256];
+    char global_temp_filename[256];
+    snprintf(c_filename, sizeof(c_filename), "ml-%d.c", getpid());
+    snprintf(temp_filename, sizeof(temp_filename), "temp-%d.c", getpid());
+    snprintf(main_temp_filename, sizeof(main_temp_filename), "main-temp-%d.c", getpid());
+    snprintf(global_temp_filename, sizeof(global_temp_filename), "global-temp-%d.c", getpid());
+
+    c_file = fopen(c_filename, "w");
+    temp_file = fopen(temp_filename, "w");
+    main_temp_file = fopen(main_temp_filename, "w");
+    global_temp_file = fopen(global_temp_filename, "w");
+    if (!c_file || !temp_file || !main_temp_file || !global_temp_file) {
+        fprintf(stderr, "! Error: Could not create temporary C files.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    fprintf(c_file, "#include <stdio.h>\n");
+    fprintf(c_file, "#include <stdlib.h>\n\n");
+
+    // Declare individual arg variables in the generated C file
+    for (int i = 0; i < arg_count; i++) {
+        fprintf(c_file, "double arg%d = %f;\n", i, arg_values[i]);
+    }
+    fprintf(c_file, "\n");
+
+    parse_ml_file(ml_file);
+
+    // Copy global variable declarations from global_temp_file to c_file
+    fclose(global_temp_file);
+    global_temp_file = fopen(global_temp_filename, "r");
+    char buffer[1024];
+    while (fgets(buffer, sizeof(buffer), global_temp_file) != NULL) {
+        fputs(buffer, c_file);
+    }
+    fclose(global_temp_file);
+
+    // Copy function definitions from temp_file to c_file
+    fclose(temp_file);
+    temp_file = fopen(temp_filename, "r");
+    while (fgets(buffer, sizeof(buffer), temp_file) != NULL) {
+        fputs(buffer, c_file);
+    }
+    fclose(temp_file);
+
+    // Write the main function
+    fprintf(c_file, "int main(int argc, char *argv[]) {\n");
+
+    // Copy main function content from main_temp_file to c_file
+    fclose(main_temp_file);
+    main_temp_file = fopen(main_temp_filename, "r");
+    while (fgets(buffer, sizeof(buffer), main_temp_file) != NULL) {
+        fputs(buffer, c_file);
+    }
+    fclose(main_temp_file);
+
+    fprintf(c_file, "    return 0;\n");
+    fprintf(c_file, "}\n");
+
+    fclose(c_file);
+    remove(temp_filename);
+    remove(main_temp_filename);
+    remove(global_temp_filename);
+}
+
+// Compile and execute the generated C file
+void compile_and_execute_c_file() {
+    char compile_command[MAX_LINE_LENGTH];
+    snprintf(compile_command, sizeof(compile_command), "gcc -o ml_temp ml-%d.c", getpid());
+    if (system(compile_command) != 0) {
+        fprintf(stderr, "! Error: Compilation failed.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    if (system("./ml_temp") != 0) {
+        fprintf(stderr, "! Error: Execution of compiled program failed.\n");
+        exit(EXIT_FAILURE);
+    }
+}
+
+// Clean up the generated files
+void cleanup() {
+    char c_filename[256];
+    snprintf(c_filename, sizeof(c_filename), "ml-%d.c", getpid());
+
+    remove(c_filename);
+    remove("ml_temp");
+}
+
+int main(int argc, char *argv[]) {
+    if (argc < 2) {
+        fprintf(stderr, "! Usage: runml <ml_program_file> [arg0 arg1 ...]\n");
+        return EXIT_FAILURE;
+    }
+
+    // Parse command-line arguments
+    arg_count = argc - 2; // Subtract 2 for program name and ML file name
+    if (arg_count > MAX_ARGS) {
+        fprintf(stderr, "! Error: Too many arguments. Maximum allowed: %d\n", MAX_ARGS);
+        return EXIT_FAILURE;
+    }
+
+    // Convert command-line arguments to double values
+    for (int i = 0; i < arg_count; i++) {
+        char *endptr;
+        arg_values[i] = strtod(argv[i + 2], &endptr);
+        if (*endptr != '\0') {
+            fprintf(stderr, "! Error: Invalid argument '%s' for arg%d. Must be a real-valued number.\n", argv[i + 2], i);
+            return EXIT_FAILURE;
+        }
+    }
+
+    // Open the ml file for reading
+    FILE *ml_file = fopen(argv[1], "r");
+    if (!ml_file) {
+        fprintf(stderr, "! Error: Could not open ML file.\n");
+        return EXIT_FAILURE;
+    }
+
+    // Generate the C file from the ml file
+    generate_c_file(ml_file);
+    fclose(ml_file);
+
+    // Compile and execute the generated C file
+    compile_and_execute_c_file();
+
+    // Clean up generated files
+    cleanup();
+
+    return EXIT_SUCCESS;
+} 
