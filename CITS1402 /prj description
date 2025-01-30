@@ -1,0 +1,144 @@
+CITS1402 – project part 2   
+Project part 2 
+Deadline: Monday 13 May 2024, 1800 hrs. 
+This assignment involves two electronic submissions (PDF and .txt) followed by a 
+demonstration 
+1 General Specification 
+(a) An Entity-Relationship Diagram is made available to you. Use that diagram to create a 
+logical model representation. You are required to Identify a primary key for each relation and 
+as well as all foreign keys in the model.  
+You are required to use the database description language. Please refer to the lecture as well as 
+chapter 17 of the reference book. A sample relation is as follows (taken from the referenced 
+dreamhome case study in the reference book):  
+Please justify the reasoning behind the derivation (e.g. why does it contain a foreign key, can 
+the foreign key be NULL, why has a particular ON UPDATE been chosen, etc.), for example: 
+Client is a strong entity.  The simple attributes fName and lName listed which 
+were part of the composite attribute name.  prefType has been merged into the 
+Client entity from the Preference entity. There was a 1:1 relationship between 
+Client and prefType which means there was mandatory participation on both 
+sides.  staffNo has been posted as a foreign key into the Client relation from a 1:* 
+Registers relationship where Client was the child and Staff was the parent.  
+staffNo is NOT NULL as Client has mandatory participation in the Registers 
+relationship.  UPDATE CASCASE was chosen to update staffNo whenever the 
+attribute changes in the Staff table.  DELETE NO ACTION has been selected to 
+stop Staff being deleted without first updating Client. 
+(b) Translate your answer to (a) into SQL (in a file .txt) and build the database using 
+capabilities of SQLite. Include the relevant DROP statements and specify ALL primary and 
+foreign keys. If want to demonstrate ISO SQL that is not available in SQLite then include as a 
+comment, but ensure that you have correct, runnable SQLite database as well.  You also 
+need to populate your database (INSERT INTO …) with some sample data and perform some 
+simple queries to ensure it works correctly. 
+In the same file, for the following questions create views with the given names: 
+1. List the patient name, customer responsible for paying fee, amount of pending fee and 
+contact details. [view name: pendingFee] 
+1 
+CITS1402 – project part 2   
+2. List the patient name, doctor’s last name, any one of doctor’s qualifications for patients 
+that had an appointment in the month of January [view name: stats] 
+3. List the current service fee for all the services when it is greater than $100. [view name: 
+expensiveServices] 
+Note: You are allowed to use any operations and functionalities provided in sqlite3 to do 
+your implementation including, subqueries, joins and triggers.  
+2 Submissions 
+The submission of any work will be taken as your claim that it is your own work (or that of you 
+and your partner if working in pairs), i.e. that you cognitively and physically created it. Use of AI 
+tools for instance ChatGPT is not allowed. Please check UWA’s website for policies related to 
+academic misconduct. 
+This also indicates that you can re-create and/or explain your work during the face-to-face 
+demonstration. 
+The required submission for Part 2 of the project includes: 
+1. A PDF containing the description of the derived relations and your reasoning behind the 
+derivation of the relation. 
+2. An SQLite script (.txt) file that can be executed on SQLite.  You will be penalised heavily 
+if the file does not execute without errors.   
+3. You may also submit an assumption and clarification document to assist in interpreting 
+your derivations and implementation. 
+3 Assessment 
+For students working in group, each member will receive similar marks. If you have issues with 
+your group member, please let me (UC) know as soon as possible. Also, you do not have to 
+continue the groups from part 1 of the project. You are allowed to change your groups. 
+The assignment will be marked out of 60. A guide to the breakdown of the marks over the parts 
+is provided as follows. Please note, I will share a more detailed rubric toward the end of this 
+week. 
+(a) 40 marks 
+(b) 20 marks  
+Inconsistencies between the relations document and your code make you lose marks. 
+4 Specifications 
+PLEASE base the design on the description. We have discussed requirements gathering from 
+the enterprise during several lectures. You need to adhere to the specifications provided. If 
+something is not clear, please first post it on forums (so that other students can also benefit), 
+before sending us an email at cits1402-sem1-pmc@uwa.edu.au.  
+2 
+CITS1402 – project part 2   
+In the case-study description the following notation is used to indicate the type of data items: 
+(N x) a digit string (integer) of length x 
+(S x) a character string of length x 
+($ x) x dollar digits and 2 cent digits 
+(C) a combination of 
+family name (S 20) 
+personal name (S 20) 
+title (S 4) 
+(A) a combination of 
+street address (S 45) 
+postcode (S 4) 
+(D) time and date or either 
+3 
+CITS1402 – project part 2   
+Case Study 
+The Sharp Vision Eye Clinic needs a management system to coordinate appointment 
+scheduling and handle patient billing within its large-scale surgical facility. 
+Each treatment room in the clinic has a unique number (N 3).  Similarly, each eye-surgeon has a 
+unique identifier code (S 2) recorded along with their name (C), contact phone number (S 14) 
+and one to three qualifications (each S 10).  Each eye surgeon has one or two surgery rooms in 
+which they work.  Please note that more than one surgeon can use the same room at different 
+times. However,  a surgeon will only use one room at a time. Each surgeon has a preferred room 
+as well.  
+Each patient or customer is uniquely identified by a client number (N 8) which is assigned to 
+them when they first become associated with the clinic and is used for them thereafter.  Also 
+recorded are their name (C), address (A) and one to three contact phone numbers (S 14).  A 
+customer is responsible for paying the bills for one or more patients, which may include their 
+own bill or their family members’ bill.  For instance, a parent might be a customer without being 
+a patient if they pay the bills for their child who is a patient. 
+For each actual patient, their Date of Birth (D) and their Medicare number (S 12) are also 
+recorded, along with which customer is currently responsible for paying for their treatment. 
+There are various services available in the clinic. For each service available, the prescribed 
+code (S 4) is recorded along with a description (S 20) and the current service fee ($ 3).  Also 
+identified are those surgeons who give this service.  Most surgeons give a large number of 
+services but not all of them. 
+When a patient requires some treatment, one or more appointments are scheduled; each 
+appointment is for a particular date and starting time (D) with a specific surgeon.  Appointments 
+are made in hour blocks; on the hour.  (At any one time there is only one appointment for a 
+particular surgery-room and a particular surgeon.)  The patient is allowed to schedule 
+appointments with different surgeons on the same day if needed. A patient does not have to be 
+seen by the same doctor across different appointments but each appointment is with a single 
+doctor..  
+Doctors can vary the standard fee and fees may change. We need to store the actual fee of a 
+service given in an appointment. We can make this an attribute of the relationship between 
+service and appointment.  At the end of an appointment, an invoice is generated.  This invoice 
+also serves as an entry in the patients' treatment history.  Each invoice also has a unique 
+invoice number (N 5), it identifies the patient and the surgeon involved, as well as the customer 
+billed.   It records the relevant date (D), a clinical comment (S 200) if one is provided and the 
+total fee ($ 4).  The invoice initially has a status (S 1) of ‘C’ (“completed”).  At some later stage, 
+the status is changed to ‘B’ (“bill sent”) and eventually, the status is changed to ‘P' (“paid”).  
+Each of the invoice's include one to five lines that identify the services given during the 
+appointment. 
+Note: Requirements in italics (in purple) are new requirements that the customer wants in 
+this database. The supplied ER diagram takes care of these requirements.   
+4 
+CITS1402 – project part 2   
+4.2 Operations and Questions  
+The “Operations and Questions” are here to help verify/validate you design.  You do not need to 
+provide answers to questions for the assignment. 
+• Add a new appointment 
+• Who has booked the most appointments? 
+• Find the doctor who gives the service X 
+• Which service is the most/least popular? 
+• Which doctor is used the most? 
+• Which treatment is used the most? 
+• Which doctor has the smallest number of patients? 
+• Which service has made the clinic the most money? 
+• Which clients have not paid and what is the outstanding amount and the contact 
+details? 
+• Which doctor has the most services offered? 
+• What service is required for appointment X? 
+5 
